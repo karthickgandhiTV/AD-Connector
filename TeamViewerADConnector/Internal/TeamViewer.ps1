@@ -1,6 +1,8 @@
 # Copyright (c) 2018-2023 TeamViewer Germany GmbH
 # See file LICENSE
 
+#requires -modules TeamViewerPS
+
 $tvApiVersion = 'v1'
 $tvApiBaseUrl = 'https://webapi.teamviewer.com'
 
@@ -17,7 +19,7 @@ function ConvertTo-TeamViewerRestError {
     }
 }
 
-function Invoke-TeamViewerRestMethod {
+function Invoke-TeamViewerAdRestMethod {
     # TeamViewer Web API requires TLS 1.2
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -48,19 +50,11 @@ function Invoke-TeamViewerRestMethod {
 }
 
 function Invoke-TeamViewerPing($accessToken) {
-    $result = Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/ping" -Method Get -Headers @{authorization = "Bearer $accessToken" }
+    $result = Invoke-TeamViewerAdRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/ping" -Method Get -Headers @{authorization = "Bearer $accessToken" }
 
     return $result.token_valid
 }
 
-function Get-TeamViewerUser($accessToken) {
-    $result = Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/users" -Method Get -Headers @{authorization = "Bearer $accessToken" } -Body @{full_list = $true }
-
-    $userDict = @{ }
-    ($result.users | ForEach-Object { $userDict[$_.email] = $_ })
-
-    return $userDict
-}
 
 function Add-TeamViewerUser($accessToken, $user) {
     $missingFields = (@('name', 'email', 'language') | Where-Object { !$user[$_] })
@@ -72,7 +66,7 @@ function Add-TeamViewerUser($accessToken, $user) {
     $payload = @{ }
     @('email', 'password', 'name', 'language', 'sso_customer_id', 'meeting_license_key') | Where-Object { $user[$_] } | ForEach-Object { $payload[$_] = $user[$_] }
 
-    return Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/users" -Method Post -Headers @{authorization = "Bearer $accessToken" } `
+    return Invoke-TeamViewerAdRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/users" -Method Post -Headers @{authorization = "Bearer $accessToken" } `
         -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json)))
 }
 
@@ -80,18 +74,18 @@ function Edit-TeamViewerUser($accessToken, $userId, $user) {
     $payload = @{ }
 
     @('email', 'name', 'password', 'active') | Where-Object { $user[$_] } | ForEach-Object { $payload[$_] = $user[$_] }
-    return Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/users/$userId" -Method Put -Headers @{authorization = "Bearer $accessToken" } `
+    return Invoke-TeamViewerAdRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/users/$userId" -Method Put -Headers @{authorization = "Bearer $accessToken" } `
         -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json)))
 }
 
 function Disable-TeamViewerUser($accessToken, $userId) {
-    return Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/users/$userId" -Method Put -Headers @{authorization = "Bearer $accessToken" } `
+    return Invoke-TeamViewerAdRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/users/$userId" -Method Put -Headers @{authorization = "Bearer $accessToken" } `
         -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{active = $false } | ConvertTo-Json)))
 }
 
 function Get-TeamViewerAccount($accessToken, [switch] $NoThrow = $false) {
     try {
-        return Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/account" -Method Get -Headers @{authorization = "Bearer $accessToken" }
+        return Invoke-TeamViewerAdRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/account" -Method Get -Headers @{authorization = "Bearer $accessToken" }
     }
     catch {
         if (!$NoThrow) {
@@ -100,58 +94,4 @@ function Get-TeamViewerAccount($accessToken, [switch] $NoThrow = $false) {
     }
 }
 
-function Get-TeamViewerUserGroup($accessToken) {
-    $paginationToken = $null
 
-    do {
-        $payload = @{}
-
-        if ($paginationToken) {
-            $payload.paginationToken = $paginationToken
-        }
-
-        $response = Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/usergroups" -Method Get -Headers @{authorization = "Bearer $accessToken" } -Body $payload
-
-        Write-Output $response.resources
-        $paginationToken = $response.nextPaginationToken
-    } while ($paginationToken)
-}
-
-function Add-TeamViewerUserGroup($accessToken, $groupName) {
-    $payload = @{ name = $groupName }
-
-    return Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/usergroups" -Method Post -Headers @{authorization = "Bearer $accessToken" } `
-        -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json)))
-}
-
-function Get-TeamViewerUserGroupMember($accessToken, $groupID) {
-    $paginationToken = $null
-
-    do {
-        $payload = @{}
-
-        if ($paginationToken) {
-            $payload.paginationToken = $paginationToken
-        }
-
-        $response = Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/usergroups/$groupID/members" -Method Get -Headers @{authorization = "Bearer $accessToken" } -Body $payload
-
-        Write-Output $response.resources
-        $paginationToken = $response.nextPaginationToken
-    } while ($paginationToken)
-}
-
-function Add-TeamViewerUserGroupMember($accessToken, $groupID, $accountIDs) {
-    return Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/usergroups/$groupID/members" -Method Post -Headers @{authorization = "Bearer $accessToken" } `
-        -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @($accountIDs))))
-}
-
-function Remove-TeamViewerUserGroupMember {
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'None')]
-    param($accessToken, $groupID, $accountIDs)
-
-    if ($PSCmdlet.ShouldProcess($accountIDs)) {
-        return Invoke-TeamViewerRestMethod -Uri "$tvApiBaseUrl/api/$tvApiVersion/usergroups/$groupID/members" -Method Delete -Headers @{authorization = "Bearer $accessToken" } `
-            -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @($accountIDs))))
-    }
-}

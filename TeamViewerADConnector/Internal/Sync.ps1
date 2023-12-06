@@ -1,6 +1,8 @@
 # Copyright (c) 2018-2023 TeamViewer Germany GmbH
 # See file LICENSE
 
+#requires -Modules TeamViewerPS
+
 function Write-SyncLog {
     param([Parameter(ValueFromPipeline)] $message, [Parameter()] $Extra)
 
@@ -137,14 +139,21 @@ function Invoke-SyncPrework($syncContext, $configuration, $progressHandler) {
     Write-SyncProgress -Handler $progressHandler -PercentComplete 10 'GetTeamViewerUsers'
     Write-SyncLog 'Fetching TeamViewer company users'
 
-    $usersTVByEmail = (Get-TeamViewerUser $configuration.ApiToken)
+    $secureString = $configuration.ApiToken
+    $ApiToken = New-Object System.Security.SecureString
+    $secureString.ToCharArray() | ForEach-Object { $ApiToken.AppendChar($_) }
+
+    $GetUsersTV = Get-TeamViewerUser -ApiToken $ApiToken
+    $usersTVByEmail = @{ }
+    ($GetUsersTV | ForEach-Object { $usersTVByEmail[$_.email] = $_ })
+
     Write-SyncLog "Retrieved $($usersTVByEmail.Count) TeamViewer company users"
 
     if ($configuration.EnableUserGroupsSync) {
         # Fetch all available user groups
         Write-SyncProgress -Handler $progressHandler -PercentComplete 20 'GetTeamViewerUserGroups'
         Write-SyncLog 'Fetching list of TeamViewer user groups.'
-        $userGroups = @(Get-TeamViewerUserGroup $configuration.ApiToken)
+        $userGroups = @(Get-TeamViewerUserGroup -ApiToken $ApiToken)
         Write-SyncLog "Retrieved $($userGroups.Count) TeamViewer user groups."
 
         # Fetch user group members
@@ -152,7 +161,7 @@ function Invoke-SyncPrework($syncContext, $configuration, $progressHandler) {
 
         foreach ($userGroup in $userGroups) {
             Write-SyncLog "Fetching members of TeamViewer user group '$($userGroup.name)'"
-            $userGroupMembers = @(Get-TeamViewerUserGroupMember $configuration.ApiToken $userGroup.id)
+            $userGroupMembers = @(Get-TeamViewerUserGroupMember -ApiToken $ApiToken -UserGroup $userGroup.id)
             Write-SyncLog "Retrieved $($userGroupMembers.Count) members of TeamViewer user group '$($userGroup.name)'"
             $userGroupMembersByGroup[$userGroup.id] = $userGroupMembers
         }
@@ -299,6 +308,10 @@ function Invoke-SyncUser($syncContext, $configuration, $progressHandler) {
 function Invoke-SyncUserGroups($syncContext, $configuration, $progressHandler) {
     Write-SyncLog 'Starting user groups synchronization'
 
+    $secureString = $configuration.ApiToken
+    $ApiToken = New-Object System.Security.SecureString
+    $secureString.ToCharArray() | ForEach-Object { $ApiToken.AppendChar($_) }
+
     if ($configuration.TestRun) {
         Write-SyncLog "Mode 'Test Run' is active. Information of your TeamViewer user groups will not be modified!"
     }
@@ -316,7 +329,7 @@ function Invoke-SyncUserGroups($syncContext, $configuration, $progressHandler) {
             Write-SyncLog "Creating user group '$adGroupName'"
             if (!$configuration.TestRun) {
                 try {
-                    $userGroup = (Add-TeamViewerUserGroup $configuration.ApiToken $adGroupName)
+                    $userGroup = (New-TeamViewerUserGroup -ApiToken $ApiToken -Name $adGroupName)
                     $statistics.CreatedGroups++
                 }
                 catch {
@@ -354,18 +367,14 @@ function Invoke-SyncUserGroups($syncContext, $configuration, $progressHandler) {
 
         Write-SyncLog "Adding $($membersToAdd.Count) users to user group '$($userGroup.name)'"
 
-        if (!$configuration.TestRun -And $membersToAdd.Count -Gt 0) {
-            $membersToAdd | Split-Bulk -Size 100 | ForEach-Object {
-                $currentMembersToAdd = $_
-
-                try {
-                    (Add-TeamViewerUserGroupMember $configuration.ApiToken $userGroup.id $currentMembersToAdd) | Out-Null
-                    $statistics.AddedMembers += $currentMembersToAdd.Count
-                }
-                catch {
-                    Write-SyncLog "Failed to add members to user group '$($userGroup.name)': $_"
-                    $statistics.Failed += $currentMembersToAdd.Count
-                }
+        if (!$configuration.TestRun -and ($membersToAdd.Count -gt 0)) {
+            try {
+                Add-TeamViewerUserGroupMember -ApiToken $ApiToken -UserGroup $userGroup.id -Member $membersToAdd
+                $statistics.AddedMembers += $membersToAdd.Count
+            }
+            catch {
+                Write-SyncLog "Failed to add members to user group '$($userGroup.name)': $_"
+                $statistics.Failed += $membersToAdd.Count
             }
         }
         else {
@@ -384,18 +393,14 @@ function Invoke-SyncUserGroups($syncContext, $configuration, $progressHandler) {
             }
         }
         Write-SyncLog "Removing $($membersToRemove.Count) members from user group '$($userGroup.name)'"
-        if (!$configuration.TestRun -And $membersToRemove.Count -Gt 0) {
-            $membersToRemove | Split-Bulk -Size 100 | ForEach-Object {
-                $currentMembersToRemove = $_
-
-                try {
-                    (Remove-TeamViewerUserGroupMember $configuration.ApiToken $userGroup.id $currentMembersToRemove) | Out-Null
-                    $statistics.RemovedMembers += $currentMembersToRemove.Count
-                }
-                catch {
-                    Write-SyncLog "Failed to remove members from user group '$($userGroup.name)'"
-                    $statistics.Failed += $currentMembersToRemove.Count
-                }
+        if (!$configuration.TestRun -and ($membersToRemove -gt 0)) {
+            try {
+                (Remove-TeamViewerUserGroupMember -ApiToken $ApiToken -UserGroup $userGroup.id -UserGroupMember $membersToRemove ) | Out-Null
+                $statistics.RemovedMembers += $membersToRemove.Count
+            }
+            catch {
+                Write-SyncLog "Failed to remove members from user group '$($userGroup.name)'"
+                $statistics.Failed += $currentMembersToRemove.Count
             }
         }
         else {
